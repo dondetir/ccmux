@@ -1,8 +1,11 @@
 {
-  "name": "ccmux",
+  "name": "@dondetir/ccmux",
   "version": "0.1.0",
-  "description": "Run Claude Code on GitHub Copilot's backend — a local Anthropic-to-Copilot proxy",
+  "description": "Run Claude Code on GitHub Copilot's backend, a local Anthropic-to-Copilot proxy",
   "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "ccmux": "bin/ccmux.mjs"
