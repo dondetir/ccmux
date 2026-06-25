@@ -6,12 +6,12 @@
 
 Your GitHub Copilot subscription (including the free tier) and your Ollama Cloud key both power `claude` in your terminal.
 
-[![npm](https://img.shields.io/npm/v/ccmux?label=npm)](https://www.npmjs.com/package/ccmux)
+[![npm](https://img.shields.io/npm/v/@dondetir/ccmux?label=npm)](https://www.npmjs.com/package/@dondetir/ccmux)
 [![node](https://img.shields.io/badge/node-%E2%89%A520-339933)](https://nodejs.org)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
 ```bash
-npm i -g ccmux && ccmux claude
+npm i -g @dondetir/ccmux && ccmux claude
 ```
 
 *Don't switch tools. Switch backends.*
@@ -38,7 +38,7 @@ npm i -g ccmux && ccmux claude
 ## 🚀 Quickstart
 
 ```bash
-npm i -g ccmux      # puts the `ccmux` CLI on your PATH
+npm i -g @dondetir/ccmux   # puts the `ccmux` CLI on your PATH
 ccmux claude        # starts the proxy if needed, then launches Claude Code
 ```
 
