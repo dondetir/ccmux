@@ -216,6 +216,8 @@ app.get("/v1/models", async (c) => {
     if (!ollamaOnly) throw e;
     data = { data: [] };
   }
+  // Same filter the official Copilot CLI uses: only models it groups in its picker.
+  data.data = (data.data ?? []).filter((m: any) => m.model_picker_category != null);
   // Push Ollama models so the alias loop below includes them in the picker.
   for (const [key, entry] of modelCatalog) {
     if (entry.provider !== "ollama") continue;
