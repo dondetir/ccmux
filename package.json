@@ -1,0 +1,44 @@
+{
+  "name": "ccmux",
+  "version": "0.1.0",
+  "description": "Run Claude Code on GitHub Copilot's backend — a local Anthropic-to-Copilot proxy",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "ccmux": "bin/ccmux.mjs"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "github:dondetir/ccmux"
+  },
+  "homepage": "https://github.com/dondetir/ccmux",
+  "bugs": {
+    "url": "https://github.com/dondetir/ccmux/issues"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.6.14",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

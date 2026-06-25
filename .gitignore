@@ -1,0 +1,8 @@
+node_modules/
+.env
+.claude/
+.remember/
+# build artifacts / OS junk
+*.tgz
+.DS_Store
+*.log
