@@ -54,7 +54,7 @@ describe("anthropicToResponses", () => {
     expect(payload.instructions).toBe("Part A.\nPart B.");
   });
 
-  it("converts tool_use block to function_call item with matching id and call_id", () => {
+  it("converts tool_use block to function_call item with call_id and no id", () => {
     const payload = anthropicToResponses({
       ...base,
       messages: [
@@ -69,7 +69,7 @@ describe("anthropicToResponses", () => {
     expect(payload.input).toHaveLength(1);
     const fc = payload.input[0];
     expect(fc.type).toBe("function_call");
-    expect(fc.id).toBe("toolu_01abc");
+    expect(fc.id).toBeUndefined(); // no fc_* id to echo; Responses API rejects non-fc_ ids
     expect(fc.call_id).toBe("toolu_01abc"); // 1:1 passthrough
     expect(fc.name).toBe("get_weather");
     expect(fc.arguments).toBe('{"city":"NYC"}');

@@ -1,6 +1,6 @@
 {
   "name": "@dondetir/ccmux",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Run Claude Code on GitHub Copilot's backend, a local Anthropic-to-Copilot proxy",
   "private": false,
   "publishConfig": {

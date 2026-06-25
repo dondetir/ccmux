@@ -57,11 +57,10 @@ export function anthropicToResponses(body: AnthropicBody): any {
 
         case "tool_use":
           flushText();
-          // id = item id for streaming delta routing; call_id = the Anthropic tool_use id.
-          // Responses API preserves whatever call_id you provide, including toolu_* ids.
+          // call_id = the Anthropic tool_use id (toolu_* or call_*), preserved as-is.
+          // No `id`: on input it must be a server-issued fc_* id, which we don't have.
           input.push({
             type: "function_call",
-            id: block.id,
             call_id: block.id,
             name: block.name,
             arguments: JSON.stringify(block.input ?? {}),

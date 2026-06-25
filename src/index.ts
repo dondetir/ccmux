@@ -231,13 +231,16 @@ app.get("/v1/models", async (c) => {
   // Prefix non-Claude ids so Claude Code's gateway discovery lists gpt/gemini
   // in /model (it filters to claude-/anthropic-). unaliasModel reverses it on
   // inbound requests. Fold backend + context size into display_name for the picker.
-  for (const m of data?.data ?? []) {
-    if (!m?.id) continue;
+  // Pad the name column so the [backend] provider lines up across rows (picker
+  // is monospace). Two passes: measure widest name, then format.
+  const rows = (data?.data ?? []).filter((m: any) => m?.id);
+  const nameW = Math.max(0, ...rows.map((m: any) => (m.name ?? m.id).length));
+  for (const m of rows) {
     const backend =
       (m._ccmux_backend ?? modelCatalog.get(m.id)?.provider ?? "copilot") === "ollama" ? "ollama" : "copilot";
     const ctx = m.capabilities?.limits?.max_context_window_tokens ?? m.capabilities?.limits?.max_prompt_tokens;
     const ctxStr = ctx ? ` (${Math.round(ctx / 1000)}k ctx)` : "";
-    m.display_name = `${m.name ?? m.id} [${backend}]${ctxStr}`;
+    m.display_name = `${(m.name ?? m.id).padEnd(nameW)}  [${backend.padEnd(7)}]${ctxStr}`;
     delete m._ccmux_backend;
     m.id = aliasModelId(m.id);
   }
