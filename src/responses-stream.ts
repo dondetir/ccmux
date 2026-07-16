@@ -34,12 +34,14 @@ export async function* translateResponsesStream(
   let buf = "";
 
   let nextIndex = 0;
-  const itemIdToIndex = new Map<string, number>(); // item.id -> Anthropic block index
+  // Key by output_index, NOT item.id: Copilot rotates the encrypted item_id on
+  // every event, so added/delta/done never share an id. output_index is stable.
+  const blockByOutputIndex = new Map<number, number>(); // output_index -> Anthropic block index
   let openBlock: number | null = null;
   let stopReason = "end_turn";
   let hadToolUse = false; // true if any function_call item was opened
-  // Tracks which item_ids have emitted at least one delta (for .done no-delta fallback)
-  const emittedDelta = new Set<string>();
+  // Tracks which output_index emitted at least one delta (for .done no-delta fallback)
+  const emittedDelta = new Set<number>();
   let outTokens = 0;
   let inTokens = 0;
 
@@ -89,7 +91,7 @@ export async function* translateResponsesStream(
 
             yield* closeOpen();
             const idx = nextIndex++;
-            itemIdToIndex.set(item.id, idx);
+            blockByOutputIndex.set(ev.output_index, idx);
             openBlock = idx;
 
             if (item.type === "function_call") {
@@ -115,14 +117,14 @@ export async function* translateResponsesStream(
           }
 
           case "response.output_text.delta": {
-            const idx = itemIdToIndex.get(ev.item_id);
+            const idx = blockByOutputIndex.get(ev.output_index);
             if (idx === undefined) break;
             if (openBlock !== idx) {
               yield* closeOpen();
               openBlock = idx;
             }
             if (ev.delta) {
-              emittedDelta.add(ev.item_id);
+              emittedDelta.add(ev.output_index);
               yield sse("content_block_delta", {
                 type: "content_block_delta",
                 index: idx,
@@ -134,8 +136,8 @@ export async function* translateResponsesStream(
 
           case "response.output_text.done": {
             // If no deltas arrived, emit full text now so short payloads are not lost.
-            if (!emittedDelta.has(ev.item_id) && ev.text) {
-              const idx = itemIdToIndex.get(ev.item_id);
+            if (!emittedDelta.has(ev.output_index) && ev.text) {
+              const idx = blockByOutputIndex.get(ev.output_index);
               if (idx !== undefined) {
                 yield sse("content_block_delta", {
                   type: "content_block_delta",
@@ -148,14 +150,14 @@ export async function* translateResponsesStream(
           }
 
           case "response.function_call_arguments.delta": {
-            const idx = itemIdToIndex.get(ev.item_id);
+            const idx = blockByOutputIndex.get(ev.output_index);
             if (idx === undefined) break;
             if (openBlock !== idx) {
               yield* closeOpen();
               openBlock = idx;
             }
             if (ev.delta) {
-              emittedDelta.add(ev.item_id);
+              emittedDelta.add(ev.output_index);
               yield sse("content_block_delta", {
                 type: "content_block_delta",
                 index: idx,
@@ -167,8 +169,8 @@ export async function* translateResponsesStream(
 
           case "response.function_call_arguments.done": {
             // If no deltas arrived, emit full arguments now so short tool calls are not empty.
-            if (!emittedDelta.has(ev.item_id) && ev.arguments) {
-              const idx = itemIdToIndex.get(ev.item_id);
+            if (!emittedDelta.has(ev.output_index) && ev.arguments) {
+              const idx = blockByOutputIndex.get(ev.output_index);
               if (idx !== undefined) {
                 yield sse("content_block_delta", {
                   type: "content_block_delta",
@@ -181,8 +183,7 @@ export async function* translateResponsesStream(
           }
 
           case "response.output_item.done": {
-            const item = ev.item;
-            const idx = item ? itemIdToIndex.get(item.id) : undefined;
+            const idx = blockByOutputIndex.get(ev.output_index);
             if (idx !== undefined) {
               yield sse("content_block_stop", { type: "content_block_stop", index: idx });
               if (openBlock === idx) openBlock = null;

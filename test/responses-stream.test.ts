@@ -26,14 +26,17 @@ async function collect(frames: string[], onUsage?: (u: any) => void, factor = 1)
   return events;
 }
 
-// Minimal text-only stream
+// Minimal text-only stream. item_id is deliberately different on every event
+// (real Copilot rotates the encrypted item_id) to prove routing keys off
+// output_index, not item_id.
 const TEXT_STREAM = [
   frame("response.output_item.added", {
+    output_index: 0,
     item: { id: "item_1", type: "message" },
   }),
-  frame("response.output_text.delta", { item_id: "item_1", delta: "Hello" }),
-  frame("response.output_text.delta", { item_id: "item_1", delta: " world" }),
-  frame("response.output_item.done", { item: { id: "item_1" } }),
+  frame("response.output_text.delta", { output_index: 0, item_id: "item_1a", delta: "Hello" }),
+  frame("response.output_text.delta", { output_index: 0, item_id: "item_1b", delta: " world" }),
+  frame("response.output_item.done", { output_index: 0, item: { id: "item_1c" } }),
   frame("response.completed", {
     response: {
       status: "completed",
@@ -42,14 +45,15 @@ const TEXT_STREAM = [
   }),
 ];
 
-// Tool call stream
+// Tool call stream. Same item_id-rotation treatment as TEXT_STREAM.
 const TOOL_STREAM = [
   frame("response.output_item.added", {
+    output_index: 0,
     item: { id: "item_fc", type: "function_call", call_id: "toolu_01abc", name: "get_time" },
   }),
-  frame("response.function_call_arguments.delta", { item_id: "item_fc", delta: '{"tz":' }),
-  frame("response.function_call_arguments.delta", { item_id: "item_fc", delta: '"UTC"}' }),
-  frame("response.output_item.done", { item: { id: "item_fc" } }),
+  frame("response.function_call_arguments.delta", { output_index: 0, item_id: "item_fc_a", delta: '{"tz":' }),
+  frame("response.function_call_arguments.delta", { output_index: 0, item_id: "item_fc_b", delta: '"UTC"}' }),
+  frame("response.output_item.done", { output_index: 0, item: { id: "item_fc_c" } }),
   frame("response.completed", {
     response: {
       status: "completed",
@@ -151,10 +155,10 @@ describe("translateResponsesStream", () => {
 
   it("drops reasoning_summary_text.delta events silently", async () => {
     const frames = [
-      frame("response.output_item.added", { item: { id: "r1", type: "message" } }),
-      frame("response.reasoning_summary_text.delta", { item_id: "r1", delta: "reasoning..." }),
-      frame("response.output_text.delta", { item_id: "r1", delta: "answer" }),
-      frame("response.output_item.done", { item: { id: "r1" } }),
+      frame("response.output_item.added", { output_index: 0, item: { id: "r1", type: "message" } }),
+      frame("response.reasoning_summary_text.delta", { output_index: 0, item_id: "r1", delta: "reasoning..." }),
+      frame("response.output_text.delta", { output_index: 0, item_id: "r1", delta: "answer" }),
+      frame("response.output_item.done", { output_index: 0, item: { id: "r1" } }),
       frame("response.completed", {
         response: { status: "completed", usage: { input_tokens: 0, output_tokens: 0 } },
       }),
@@ -171,7 +175,9 @@ describe("translateResponsesStream", () => {
     const dying = new ReadableStream<Uint8Array>({
       start(c) {
         c.enqueue(
-          enc.encode(frame("response.output_item.added", { item: { id: "i1", type: "message" } })),
+          enc.encode(
+            frame("response.output_item.added", { output_index: 0, item: { id: "i1", type: "message" } }),
+          ),
         );
         c.error(new Error("connection reset"));
       },
@@ -185,13 +191,16 @@ describe("translateResponsesStream", () => {
   });
 
   it("reasoning item in output_item.added does not open a block", async () => {
+    // The reasoning item consumes output_index 0 (it's still a position in the
+    // output list) but no Anthropic block, so the message item's output_index
+    // is 1 while its Anthropic content_block index is 0 (reasoning doesn't count).
     const frames = [
-      frame("response.output_item.added", { item: { id: "r_item", type: "reasoning" } }),
-      frame("response.reasoning_summary_text.delta", { item_id: "r_item", delta: "I reasoned..." }),
-      frame("response.output_item.done", { item: { id: "r_item" } }),
-      frame("response.output_item.added", { item: { id: "text_item", type: "message" } }),
-      frame("response.output_text.delta", { item_id: "text_item", delta: "result" }),
-      frame("response.output_item.done", { item: { id: "text_item" } }),
+      frame("response.output_item.added", { output_index: 0, item: { id: "r_item", type: "reasoning" } }),
+      frame("response.reasoning_summary_text.delta", { output_index: 0, item_id: "r_item", delta: "I reasoned..." }),
+      frame("response.output_item.done", { output_index: 0, item: { id: "r_item" } }),
+      frame("response.output_item.added", { output_index: 1, item: { id: "text_item", type: "message" } }),
+      frame("response.output_text.delta", { output_index: 1, item_id: "text_item", delta: "result" }),
+      frame("response.output_item.done", { output_index: 1, item: { id: "text_item" } }),
       frame("response.completed", {
         response: { status: "completed", usage: { input_tokens: 0, output_tokens: 0 } },
       }),
@@ -201,16 +210,17 @@ describe("translateResponsesStream", () => {
     const starts = ev.filter((e) => e.event === "content_block_start");
     expect(starts).toHaveLength(1);
     expect(starts[0].data.content_block.type).toBe("text");
+    expect(starts[0].data.index).toBe(0); // Anthropic block index, distinct from output_index 1
     // The text delta should be captured
     const deltas = ev.filter((e) => e.event === "content_block_delta");
     expect(deltas).toHaveLength(1);
     expect(deltas[0].data.delta.text).toBe("result");
   });
 
-  it("unknown delta item_id (no prior added event) is silently ignored", async () => {
-    // Orphan delta: item_id doesn't match anything in itemIdToIndex
+  it("unknown delta output_index (no prior added event) is silently ignored", async () => {
+    // Orphan delta: output_index doesn't match anything in blockByOutputIndex
     const frames = [
-      frame("response.function_call_arguments.delta", { item_id: "unknown_id", delta: '{"x":1}' }),
+      frame("response.function_call_arguments.delta", { output_index: 99, item_id: "unknown_id", delta: '{"x":1}' }),
       frame("response.completed", {
         response: { status: "completed", usage: { input_tokens: 0, output_tokens: 0 } },
       }),
@@ -219,6 +229,41 @@ describe("translateResponsesStream", () => {
     const ev = await collect(frames);
     expect(ev.filter((e) => e.event === "content_block_delta")).toHaveLength(0);
     expect(ev.at(-1)!.event).toBe("message_stop");
+  });
+
+  it("routes sequential blocks by output_index even when item_id is reused/rotated across items", async () => {
+    // Real Copilot reuses/rotates the opaque item_id, so a second, unrelated
+    // block can arrive with the same item_id as the first. Routing must not
+    // be fooled into targeting the first (already-closed) block.
+    const frames = [
+      frame("response.output_item.added", { output_index: 0, item: { id: "rotating_id", type: "message" } }),
+      frame("response.output_text.delta", { output_index: 0, item_id: "rotating_id", delta: "first" }),
+      frame("response.output_item.done", { output_index: 0, item: { id: "rotating_id" } }),
+      frame("response.output_item.added", {
+        output_index: 1,
+        item: { id: "rotating_id", type: "function_call", call_id: "toolu_second", name: "f" },
+      }),
+      frame("response.function_call_arguments.delta", { output_index: 1, item_id: "rotating_id", delta: '{"a":1}' }),
+      frame("response.output_item.done", { output_index: 1, item: { id: "rotating_id" } }),
+      frame("response.completed", {
+        response: { status: "completed", usage: { input_tokens: 0, output_tokens: 0 } },
+      }),
+    ];
+    const ev = await collect(frames);
+    const starts = ev.filter((e) => e.event === "content_block_start");
+    expect(starts).toHaveLength(2);
+    expect(starts[0].data.index).toBe(0);
+    expect(starts[0].data.content_block.type).toBe("text");
+    expect(starts[1].data.index).toBe(1);
+    expect(starts[1].data.content_block.type).toBe("tool_use");
+
+    const deltas = ev.filter((e) => e.event === "content_block_delta");
+    expect(deltas).toHaveLength(2);
+    expect(deltas[0].data.index).toBe(0); // text delta routed to block 0, not 1
+    expect(deltas[1].data.index).toBe(1); // tool delta routed to block 1, not 0
+
+    const stops = ev.filter((e) => e.event === "content_block_stop");
+    expect(stops.map((s) => s.data.index)).toEqual([0, 1]);
   });
 
   it("tool call stream: stop_reason is tool_use (not end_turn)", async () => {
@@ -230,10 +275,11 @@ describe("translateResponsesStream", () => {
   it("tool call stream: stop_reason stays max_tokens even with function_call (truncation wins)", async () => {
     const frames = [
       frame("response.output_item.added", {
+        output_index: 0,
         item: { id: "item_fc2", type: "function_call", call_id: "toolu_99", name: "foo" },
       }),
-      frame("response.function_call_arguments.delta", { item_id: "item_fc2", delta: "{}" }),
-      frame("response.output_item.done", { item: { id: "item_fc2" } }),
+      frame("response.function_call_arguments.delta", { output_index: 0, item_id: "item_fc2", delta: "{}" }),
+      frame("response.output_item.done", { output_index: 0, item: { id: "item_fc2" } }),
       frame("response.completed", {
         response: {
           status: "incomplete",
@@ -251,13 +297,15 @@ describe("translateResponsesStream", () => {
     // Upstream sends .done with full payload but no preceding .delta events
     const frames = [
       frame("response.output_item.added", {
+        output_index: 0,
         item: { id: "item_short", type: "function_call", call_id: "toolu_short", name: "ping" },
       }),
       frame("response.function_call_arguments.done", {
+        output_index: 0,
         item_id: "item_short",
         arguments: '{"msg":"hi"}',
       }),
-      frame("response.output_item.done", { item: { id: "item_short" } }),
+      frame("response.output_item.done", { output_index: 0, item: { id: "item_short" } }),
       frame("response.completed", {
         response: { status: "completed", usage: { input_tokens: 0, output_tokens: 0 } },
       }),
@@ -271,9 +319,9 @@ describe("translateResponsesStream", () => {
 
   it("output_text.done with no prior deltas emits synthetic text delta", async () => {
     const frames = [
-      frame("response.output_item.added", { item: { id: "item_short_text", type: "message" } }),
-      frame("response.output_text.done", { item_id: "item_short_text", text: "short answer" }),
-      frame("response.output_item.done", { item: { id: "item_short_text" } }),
+      frame("response.output_item.added", { output_index: 0, item: { id: "item_short_text", type: "message" } }),
+      frame("response.output_text.done", { output_index: 0, item_id: "item_short_text", text: "short answer" }),
+      frame("response.output_item.done", { output_index: 0, item: { id: "item_short_text" } }),
       frame("response.completed", {
         response: { status: "completed", usage: { input_tokens: 0, output_tokens: 0 } },
       }),
@@ -289,14 +337,16 @@ describe("translateResponsesStream", () => {
     // When deltas already arrived, .done should not add a duplicate
     const frames = [
       frame("response.output_item.added", {
+        output_index: 0,
         item: { id: "item_nodupe", type: "function_call", call_id: "toolu_nodupe", name: "f" },
       }),
-      frame("response.function_call_arguments.delta", { item_id: "item_nodupe", delta: '{"a":1}' }),
+      frame("response.function_call_arguments.delta", { output_index: 0, item_id: "item_nodupe", delta: '{"a":1}' }),
       frame("response.function_call_arguments.done", {
+        output_index: 0,
         item_id: "item_nodupe",
         arguments: '{"a":1}',
       }),
-      frame("response.output_item.done", { item: { id: "item_nodupe" } }),
+      frame("response.output_item.done", { output_index: 0, item: { id: "item_nodupe" } }),
       frame("response.completed", {
         response: { status: "completed", usage: { input_tokens: 0, output_tokens: 0 } },
       }),

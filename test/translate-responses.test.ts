@@ -276,7 +276,21 @@ describe("anthropicToResponses", () => {
     expect(payload.stream).toBe(true);
   });
 
-  it("forwards temperature and top_p when present", () => {
+  it("drops temperature and top_p for reasoning models (gpt-5 rejects them)", () => {
+    // base model gpt-5-mini has efforts -> reasoning -> Responses API rejects
+    // temperature/top_p as "invalid parameter"; drop so a response renders.
+    const payload = anthropicToResponses({
+      ...base,
+      temperature: 0.7,
+      top_p: 0.9,
+      messages: [{ role: "user", content: "hi" }],
+    } as any);
+    expect(payload.temperature).toBeUndefined();
+    expect(payload.top_p).toBeUndefined();
+  });
+
+  it("forwards temperature and top_p for non-reasoning /responses models", () => {
+    modelCatalog.set("gpt-5-mini", { maxOutput: 16384, efforts: [], supportedEndpoints: ["/responses"] });
     const payload = anthropicToResponses({
       ...base,
       temperature: 0.7,

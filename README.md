@@ -70,6 +70,8 @@ Free tier gets `claude-haiku-4.5` only; paid Copilot unlocks sonnet, GPT, and Ge
 | `ccmux login ollama` | Save an Ollama Cloud API key (from ollama.com/settings/keys) |
 | `ccmux logout` | Remove saved tokens (GitHub + Ollama) + VS Code Copilot tokens + stop the proxy. Use `eval "$(ccmux logout)"` to also clear tokens exported in the current shell |
 | `ccmux serve` | Run the proxy in the foreground on `:4141` |
+| `ccmux claude --dangerously-skip-permissions` | Launch Claude Code with `--dangerously-skip-permissions` (aliases: `--dangerously`, `--yolo`). Skips per-action permission prompts — sandbox/VM only |
+| `ccmux claude --debug` | Dump every request + upstream response (auth redacted) to `~/.config/ccmux/debug.log` (also `CCMUX_DEBUG=1`) |
 
 Logs stream to `~/.config/ccmux/proxy.log`. If models vanish, the catalog self-heals on the next request.
 
@@ -85,6 +87,36 @@ Env vars (or `~/.config/ccmux/env`):
 | `PORT` | `4141` | Proxy port (binds `127.0.0.1` only) |
 | `USE_NATIVE` | `1` | `1` = native pass-through; `0` = OpenAI translation path |
 | `CLAUDE_CONTEXT_WINDOW` | `200000` | Context window Claude Code assumes (token counts scaled to match) |
+
+## 🐛 Troubleshooting
+
+### GPT-5 / reasoning models show "invalid parameter" and no response
+
+GPT-5 reasoning models (gpt-5.*, served via the Responses API) reject sampling
+parameters — `temperature` and `top_p` — returning an "invalid/unsupported
+parameter" error, so Claude Code renders nothing. ccmux now drops those for
+reasoning models automatically. If a model still errors, find the exact rejected
+field with debug logging:
+
+```bash
+ccmux claude --debug          # or CCMUX_DEBUG=1 ccmux serve
+# then reproduce; inspect ~/.config/ccmux/debug.log
+```
+
+Every inbound Anthropic request, the translated upstream request (Authorization
+redacted), and the full upstream response (or raw SSE frames for streams) are
+appended to `~/.config/ccmux/debug.log` (0600, loopback proxy only). This is the
+authoritative way to see what Copilot rejected.
+
+### Run without permission prompts
+
+```bash
+ccmux claude --dangerously-skip-permissions   # alias: --yolo
+```
+
+This passes `--dangerously-skip-permissions` through to Claude Code, skipping its
+per-action prompts. Only do this inside a sandbox or VM — it lets the agent read,
+write, and execute without asking.
 
 ## 🔧 Development
 

@@ -85,12 +85,23 @@ const USAGE = `${hero()}${paint(C.bold, "Usage:")} ccmux <command> [args]
 ${paint(C.cyan, "Commands:")}
   claude [args...]   Start the proxy (if needed) + launch Claude Code through it
   serve              Run the proxy in the foreground on http://127.0.0.1:${PORT}
+  stop               Stop a running background proxy
   login copilot      GitHub device-flow login (saves token, auto-restarts proxy)
   login ollama       Paste (or set OLLAMA_API_KEY) an Ollama Cloud key, validate, auto-restart proxy
   logout             Remove saved tokens (GitHub + Ollama) + VS Code Copilot
                      tokens + stop the proxy. Use \`eval "$(ccmux logout)"\` to also
                      clear exported tokens in the current shell
   help               Show this help
+
+${paint(C.cyan, "Flags (any position):")}
+  --dangerously-skip-permissions
+                     Launch Claude Code with --dangerously-skip-permissions
+                     (aliases: --dangerously, --yolo). Bypasses Claude Code's
+                     per-action permission prompts — only use in a sandbox/VM.
+  --debug            Dump every request + upstream response (auth redacted) to
+                     ~/.config/ccmux/debug.log. Use to diagnose "invalid
+                     parameter" / empty-response errors (e.g. GPT-5 reasoning
+                     models). Also set via CCMUX_DEBUG=1.
 
 ${paint(C.mag, "Environment")} ${paint(C.dim, "(or ~/.config/ccmux/env):")}
   NATIVE_MODEL  Override the model served to Claude Code (default claude-haiku-4.5)
@@ -351,7 +362,29 @@ function logout() {
     warn("ccmux: token(s) are still exported in this shell. Run `eval \"$(ccmux logout)\"` to clear them, then `ccmux login copilot`/`login ollama` to re-auth.");
 }
 
-function runClaude(args) {
+// Pre-scan ccmux-level flags so they work in any position (e.g.
+// `ccmux --dangerously-skip-permissions` or `ccmux claude --debug`). Recognized
+// flags are stripped so they don't reach Claude Code twice; the permission flag
+// is re-injected explicitly to guarantee it is passed through.
+const DANGEROUSLY = new Set([
+  "--dangerously-skip-permissions",
+  "--dangerously-skip-permission",
+  "--dangerously",
+  "--yolo",
+]);
+function extractCcmuxFlags(argv) {
+  let dangerously = false;
+  let debug = false;
+  const rest = [];
+  for (const a of argv) {
+    if (a === "--debug") { debug = true; continue; }
+    if (DANGEROUSLY.has(a)) { dangerously = true; continue; }
+    rest.push(a);
+  }
+  return { dangerously, debug, rest };
+}
+
+function runClaude(args, dangerously = false) {
   const env = {
     ...process.env,
     ANTHROPIC_BASE_URL: BASE,
@@ -360,8 +393,9 @@ function runClaude(args) {
     // aliased as claude-* so they survive Claude Code's discovery filter).
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY ?? "1",
   };
+  const claudeArgs = dangerously ? ["--dangerously-skip-permissions", ...args] : args;
   registerSession();
-  const child = spawn("claude", args, { stdio: "inherit", env });
+  const child = spawn("claude", claudeArgs, { stdio: "inherit", env });
   child.once("close", (code) => {
     deregisterSession();
     process.exit(code ?? 0);
@@ -369,8 +403,10 @@ function runClaude(args) {
 }
 
 async function main() {
-  const cmd = process.argv[2];
-  const rest = process.argv.slice(3);
+  const { dangerously, debug, rest: cleanArgs } = extractCcmuxFlags(process.argv.slice(2));
+  if (debug) process.env.CCMUX_DEBUG = "1"; // startProxy/serve inherit process.env
+  const cmd = cleanArgs[0];
+  const rest = cleanArgs.slice(1);
 
   // Print and exit without starting a proxy (unknown cmds previously fell
   // through to the proxy-up block and booted a stray proxy).
@@ -382,7 +418,11 @@ async function main() {
     console.log(`ccmux v${VERSION}`);
     process.exit(0);
   }
-  const KNOWN = new Set(["claude", undefined, "serve", "login", "logout"]);
+  if (cmd === "stop") {
+    console.error(stopProxy() ? `ccmux: stopped proxy on ${BASE}` : "ccmux: no proxy running");
+    process.exit(0);
+  }
+  const KNOWN = new Set(["claude", undefined, "serve", "stop", "login", "logout"]);
   if (!KNOWN.has(cmd)) {
     console.error(`ccmux: unknown command "${cmd ?? ""}"\n\n${USAGE}`);
     process.exit(1);
@@ -450,7 +490,7 @@ async function main() {
   }
 
   if (cmd === "claude" || cmd === undefined) {
-    runClaude(rest);
+    runClaude(rest, dangerously);
   } else {
     console.error(`usage: ccmux [claude ...] | login [copilot|ollama] | logout | serve`);
     process.exit(1);

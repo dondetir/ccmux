@@ -1,5 +1,6 @@
 import "./env.js"; // load .env BEFORE any env reads below
 import { getCopilotToken } from "./token.js";
+import { debugUpstreamRequest } from "./debug.js";
 import type { TranslateFlags } from "./types.js";
 
 export const PORT = Number(process.env.PORT ?? 4141);
@@ -43,9 +44,12 @@ export async function callCopilot(
   if (provider === "ollama") {
     const body = openaiBody as any;
     const wire = { ...body, model: String(body.model ?? "").replace(/^ollama\//, "") };
-    return fetch(`${OLLAMA_BASE}/chat/completions`, {
+    const url = `${OLLAMA_BASE}/chat/completions`;
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${ollamaKey()}` };
+    debugUpstreamRequest("POST", url, headers, wire);
+    return fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${ollamaKey()}` },
+      headers,
       body: JSON.stringify(wire),
     });
   }
@@ -53,7 +57,9 @@ export async function callCopilot(
   const headers: Record<string, string> = { ...COPILOT_HEADERS, Authorization: `Bearer ${bearer}` };
   headers["X-Initiator"] = flags.agent ? "agent" : "user";
   if (flags.vision) headers["Copilot-Vision-Request"] = "true";
-  return fetch(`${COPILOT_BASE}/chat/completions`, {
+  const url = `${COPILOT_BASE}/chat/completions`;
+  debugUpstreamRequest("POST", url, headers, openaiBody);
+  return fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify(openaiBody),
@@ -63,13 +69,16 @@ export async function callCopilot(
 // Path A: forward the Anthropic body unchanged to Copilot's native endpoint.
 export async function callCopilotNative(anthropicBody: unknown): Promise<Response> {
   const bearer = await getCopilotToken();
-  return fetch(`${COPILOT_BASE}/v1/messages`, {
+  const headers = {
+    ...COPILOT_HEADERS,
+    Authorization: `Bearer ${bearer}`,
+    "anthropic-version": "2023-06-01",
+  };
+  const url = `${COPILOT_BASE}/v1/messages`;
+  debugUpstreamRequest("POST", url, headers, anthropicBody);
+  return fetch(url, {
     method: "POST",
-    headers: {
-      ...COPILOT_HEADERS,
-      Authorization: `Bearer ${bearer}`,
-      "anthropic-version": "2023-06-01",
-    },
+    headers,
     body: JSON.stringify(anthropicBody),
   });
 }
@@ -78,9 +87,12 @@ export async function callCopilotNative(anthropicBody: unknown): Promise<Respons
 // model_not_supported on free tier, not 404.
 export async function callCopilotResponses(responsesBody: unknown): Promise<Response> {
   const bearer = await getCopilotToken();
-  return fetch(`${COPILOT_BASE}/responses`, {
+  const headers = { ...COPILOT_HEADERS, Authorization: `Bearer ${bearer}` };
+  const url = `${COPILOT_BASE}/responses`;
+  debugUpstreamRequest("POST", url, headers, responsesBody);
+  return fetch(url, {
     method: "POST",
-    headers: { ...COPILOT_HEADERS, Authorization: `Bearer ${bearer}` },
+    headers,
     body: JSON.stringify(responsesBody),
   });
 }
@@ -90,13 +102,16 @@ export async function callCopilotResponses(responsesBody: unknown): Promise<Resp
 export async function countTokensUpstream(anthropicBody: unknown): Promise<number | null> {
   try {
     const bearer = await getCopilotToken();
-    const res = await fetch(`${COPILOT_BASE}/v1/messages/count_tokens`, {
+    const headers = {
+      ...COPILOT_HEADERS,
+      Authorization: `Bearer ${bearer}`,
+      "anthropic-version": "2023-06-01",
+    };
+    const url = `${COPILOT_BASE}/v1/messages/count_tokens`;
+    debugUpstreamRequest("POST", url, headers, anthropicBody);
+    const res = await fetch(url, {
       method: "POST",
-      headers: {
-        ...COPILOT_HEADERS,
-        Authorization: `Bearer ${bearer}`,
-        "anthropic-version": "2023-06-01",
-      },
+      headers,
       body: JSON.stringify(anthropicBody),
     });
     if (res.ok) return ((await res.json()) as any).input_tokens ?? null;

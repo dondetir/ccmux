@@ -1,4 +1,4 @@
-import { mapModel, clampMaxTokens, resolveEffort } from "./models.js";
+import { mapModel, clampMaxTokens, resolveEffort, modelCatalog } from "./models.js";
 import type { AnthropicBody, AnthropicMessage, TranslateFlags } from "./types.js";
 
 // Collapse an Anthropic system prompt (string | text-block[]) to a plain string.
@@ -94,12 +94,24 @@ export function anthropicToOpenAI(body: AnthropicBody): { payload: any; flags: T
   flags.agent = isAgentTurn(body.messages);
 
   const model = mapModel(body.model ?? "");
+  // Reasoning models (gpt-5*, o-series) reject `max_tokens` and sampling params
+  // on /chat/completions ("Unsupported parameter: use max_completion_tokens").
+  // Send max_completion_tokens and drop temperature/top_p for them so a
+  // reasoning model that falls through to Path B still works.
+  const chatEntry = modelCatalog.get(model);
+  const isReasoning = !!(
+    chatEntry &&
+    ((chatEntry.efforts?.length ?? 0) > 0 || chatEntry.adaptiveThinking || chatEntry.maxThinking)
+  );
   const payload: any = {
     model,
     messages,
-    max_tokens: clampMaxTokens(model, body.max_tokens ?? 4096),
+    [isReasoning ? "max_completion_tokens" : "max_tokens"]: clampMaxTokens(
+      model,
+      body.max_tokens ?? 4096,
+    ),
   };
-  if (body.temperature !== undefined) payload.temperature = body.temperature;
+  if (body.temperature !== undefined && !isReasoning) payload.temperature = body.temperature;
   if (body.stream) {
     payload.stream = true;
     payload.stream_options = { include_usage: true }; // omitting this leaves output_tokens at 0
