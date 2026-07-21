@@ -179,11 +179,12 @@ export function unaliasModel(m: string): string {
   return modelCatalog.has(real) && !real.startsWith("claude-") ? real : m;
 }
 
-// Use /responses ONLY when it is the model's sole endpoint; dual-endpoint and
-// unknown models fall through to Path B safely.
+// Route every /responses-capable model (the gpt-5 reasoning family) to Path C.
+// Even dual-endpoint models like gpt-5.4 reject tools + reasoning_effort on
+// /chat/completions ("use /v1/responses instead"), so /responses is the only
+// path that works for them. Chat-only models (gpt-4o, gemini) fall through.
 export function needsResponsesApi(model: string): boolean {
-  const eps = modelCatalog.get(model)?.supportedEndpoints ?? [];
-  return eps.includes("/responses") && !eps.includes("/chat/completions");
+  return (modelCatalog.get(model)?.supportedEndpoints ?? []).includes("/responses");
 }
 
 export function clampMaxTokens(model: string, requested: number): number {

@@ -60,12 +60,14 @@ describe("needsResponsesApi", () => {
     expect(needsResponsesApi("gpt-4.1")).toBe(false);
   });
 
-  it("returns false for dual-endpoint model (keeps on Path B)", () => {
+  it("returns true for dual-endpoint reasoning model (routes to Path C)", () => {
+    // gpt-5.4 lists both endpoints but rejects tools + reasoning_effort on
+    // /chat/completions, so it must use /responses.
     modelCatalog.set("gpt-5.4", {
       maxOutput: 16384,
       supportedEndpoints: ["/chat/completions", "/responses"],
     });
-    expect(needsResponsesApi("gpt-5.4")).toBe(false);
+    expect(needsResponsesApi("gpt-5.4")).toBe(true);
   });
 
   it("returns false for Claude model (Path A/B, not C)", () => {

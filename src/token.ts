@@ -71,8 +71,15 @@ function persistToken(gh: string): void {
     fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(CONFIG_DIR, 0o700); } catch { /* fs ignores mode */ }
     const p = path.join(CONFIG_DIR, "env");
-    fs.appendFileSync(p, `\nGH_TOKEN=${gh}\n`, { mode: 0o600 });
-    // appendFileSync mode only applies on creation; chmod enforces it on existing files.
+    // Rewrite rather than append so re-logins replace the old token instead of
+    // accumulating stale plaintext tokens. Other keys (OLLAMA_API_KEY) are kept.
+    let kept: string[] = [];
+    try {
+      kept = fs.readFileSync(p, "utf8").split("\n").filter((l) => l.trim() && !/^GH_TOKEN=/.test(l));
+    } catch { /* file doesn't exist yet */ }
+    kept.push(`GH_TOKEN=${gh}`);
+    fs.writeFileSync(p, kept.join("\n") + "\n", { mode: 0o600 });
+    // writeFileSync mode only applies on creation; chmod enforces it on existing files.
     try { fs.chmodSync(p, 0o600); } catch { /* non-posix fs */ }
     console.log(`ccmux: saved GH_TOKEN to ${p} (one-time login)`);
   } catch {

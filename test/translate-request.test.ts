@@ -153,3 +153,32 @@ describe("anthropicToOpenAI", () => {
     expect(payload.messages).toHaveLength(1);
   });
 });
+
+
+describe("Path B reasoning-model hardening", () => {
+  it("uses max_completion_tokens and drops temperature for reasoning models", () => {
+    modelCatalog.set("gpt-5.6", { maxOutput: 16384, efforts: ["low", "medium", "high"] });
+    const { payload } = anthropicToOpenAI({
+      model: "gpt-5.6",
+      max_tokens: 1024,
+      temperature: 0.7,
+      messages: [{ role: "user", content: "hi" }],
+    } as any);
+    expect(payload.max_completion_tokens).toBe(1024);
+    expect(payload.max_tokens).toBeUndefined();
+    expect(payload.temperature).toBeUndefined();
+  });
+
+  it("uses max_tokens and forwards temperature for non-reasoning models", () => {
+    modelCatalog.set("gpt-4.1", { maxOutput: 16384, efforts: [] });
+    const { payload } = anthropicToOpenAI({
+      model: "gpt-4.1",
+      max_tokens: 1024,
+      temperature: 0.7,
+      messages: [{ role: "user", content: "hi" }],
+    } as any);
+    expect(payload.max_tokens).toBe(1024);
+    expect(payload.max_completion_tokens).toBeUndefined();
+    expect(payload.temperature).toBe(0.7);
+  });
+});

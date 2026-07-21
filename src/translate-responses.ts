@@ -1,4 +1,4 @@
-import { mapModel, clampMaxTokens, resolveEffort } from "./models.js";
+import { mapModel, clampMaxTokens, resolveEffort, modelCatalog } from "./models.js";
 import { extractSystemText } from "./translate-request.js";
 import type { AnthropicBody } from "./types.js";
 
@@ -130,8 +130,17 @@ export function anthropicToResponses(body: AnthropicBody): any {
 
   if (systemText) payload.instructions = systemText;
   if (body.stream) payload.stream = true;
-  if (body.temperature !== undefined) payload.temperature = body.temperature;
-  if ((body as any).top_p !== undefined) payload.top_p = (body as any).top_p;
+  // GPT-5 reasoning models reject temperature/top_p on the Responses API
+  // ("Unsupported parameter"/"invalid parameter"), which surfaces in Claude
+  // Code as an error with no assistant response rendered. Drop them for
+  // reasoning models; the Responses API doesn't honor sampling for reasoning.
+  const rEntry = modelCatalog.get(model);
+  const isReasoning = !!(
+    rEntry &&
+    ((rEntry.efforts?.length ?? 0) > 0 || rEntry.adaptiveThinking || rEntry.maxThinking)
+  );
+  if (body.temperature !== undefined && !isReasoning) payload.temperature = body.temperature;
+  if ((body as any).top_p !== undefined && !isReasoning) payload.top_p = (body as any).top_p;
 
   // Tool schema is flat (no function wrapper); parameters renamed from input_schema.
   const allTools = body.tools ?? [];

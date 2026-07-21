@@ -38,8 +38,18 @@ import { rewriteNativeStream } from "./native-stream.js";
 import { anthropicToResponses, translateResponsesResponse, ResponsesApiUnsupported } from "./translate-responses.js";
 import { translateResponsesStream } from "./responses-stream.js";
 import { startIdleReaper } from "./sessions.js";
+import { DEBUG, debugInbound, debugUpstreamResponse, debugTeeStream } from "./debug.js";
 
 const app = new Hono();
+
+// Browsers always send Origin on cross-origin requests; CLI clients don't.
+// Rejecting it stops a malicious webpage from spending Copilot quota through
+// the unauthenticated loopback port (no-preflight "simple request" POSTs).
+app.use(async (c, next) => {
+  if (c.req.header("origin"))
+    return c.json({ type: "error", error: { type: "forbidden", message: "browser-origin requests are not allowed" } }, 403);
+  await next();
+});
 
 const NATIVE_ALLOWED = new Set([
   "model", "max_tokens", "messages", "system", "tools", "tool_choice",
@@ -67,21 +77,41 @@ async function mirrorError(c: Context, up: Response, preRead?: string) {
   return c.json({ type: "error", error: { type, message: text } }, up.status as any);
 }
 
+// Single source of truth for upstream routing. Endpoint choice is catalog-driven
+// (supportedEndpoints), so new Copilot models need no code here — a /responses
+// model routes to Path C, everything else to Path B. Native is the one exception:
+// Copilot exposes no /v1/messages in the catalog, so Claude passthrough is a
+// ccmux opt-in (USE_NATIVE), not a catalog fact. Add a future endpoint here only.
+function route(model: string): "native" | "responses" | "chat" {
+  if (USE_NATIVE && !needsTranslation(model)) return "native";
+  if (needsResponsesApi(model)) return "responses";
+  return "chat";
+}
+
 app.post("/v1/messages", async (c) => {
   const body = await c.req.json();
   // The /model picker may send an aliased id (claude-gpt-4.1); restore the real
   // Copilot id so path selection + scaling use it.
   body.model = unaliasModel(body.model ?? "");
+  debugInbound("/v1/messages", body);
   try {
-    // Path A: native pass-through. GPT/Gemini ids always use the translation path;
-    // Claude goes native when USE_NATIVE is set.
-    if (USE_NATIVE && !needsTranslation(body.model ?? "")) {
+    const path = route(body.model ?? "");
+    // Path A: native pass-through to Vertex Claude (USE_NATIVE).
+    if (path === "native") {
       body.model = resolveModel(body.model ?? "");
       if (body.max_tokens) body.max_tokens = clampMaxTokens(body.model, body.max_tokens);
       // Copilot's native endpoint (Vertex Claude) validates strictly and 400s on
       // unknown fields. Allowlist instead of chasing each new field Claude Code adds.
       for (const k of Object.keys(body))
         if (!NATIVE_ALLOWED.has(k)) delete body[k];
+      // Copilot's schema also lags Claude Code's server-tool types (e.g. a new
+      // "advisor_20260301"); drop anything but custom tools, same as Path B.
+      if (Array.isArray(body.tools)) {
+        const allTools = body.tools;
+        body.tools = allTools.filter((t: any) => !t.type || t.type === "custom");
+        if (body.tools.length !== allTools.length)
+          console.warn(`dropped ${allTools.length - body.tools.length} server tool(s)`);
+      }
       // Rewrite thinking + output_config.effort to what the serving model supports.
       adaptBodyToModel(body);
       await ensureModelPolicy(body.model);
@@ -98,28 +128,37 @@ app.post("/v1/messages", async (c) => {
           adaptBodyToModel(body);
           up = await callCopilotNative(body);
         } else {
+          debugUpstreamResponse(400, txt);
           return c.json({ type: "error", error: { type: "invalid_request_error", message: txt } }, 400);
         }
       }
       if (!up.ok) {
         const txt = await up.text();
+        debugUpstreamResponse(up.status, txt);
         return mirrorError(c, up, txt);
       }
       const factor = contextScale(body.model);
       if (body.stream) {
         c.header("Content-Type", "text/event-stream");
         return stream(c, async (s) => {
-          for await (const evt of rewriteNativeStream(up.body!, factor, () => {}, () => {}))
+          for await (const evt of rewriteNativeStream(
+            debugTeeStream(up.body!, "<<< native stream"),
+            factor,
+            () => {},
+            () => {},
+          ))
             await s.write(evt);
         });
       }
-      const json: any = await up.json();
+      const nativeText = await up.text();
+      debugUpstreamResponse(up.status, nativeText);
+      const json: any = JSON.parse(nativeText);
       scaleUsage(json.usage, factor);
       return c.json(json);
     }
 
-    // Path C: Responses API for models that only expose /responses (gpt-5*, mai-code-1*).
-    if (needsResponsesApi(body.model ?? "")) {
+    // Path C: Responses API for /responses-capable models (gpt-5*, mai-code-1*).
+    if (path === "responses") {
       let responsesPayload: any;
       try {
         responsesPayload = anthropicToResponses(body);
@@ -132,17 +171,25 @@ app.post("/v1/messages", async (c) => {
       const up = await callCopilotResponses(responsesPayload);
       if (!up.ok) {
         const txt = await up.text();
+        debugUpstreamResponse(up.status, txt);
         return mirrorError(c, up, txt);
       }
       const factor = contextScale(responsesPayload.model);
       if (body.stream) {
         c.header("Content-Type", "text/event-stream");
         return stream(c, async (s) => {
-          for await (const evt of translateResponsesStream(up.body!, () => {}, factor, () => {}))
+          for await (const evt of translateResponsesStream(
+            debugTeeStream(up.body!, "<<< responses stream"),
+            () => {},
+            factor,
+            () => {},
+          ))
             await s.write(evt);
         });
       }
-      const res = translateResponsesResponse(await up.json());
+      const respText = await up.text();
+      debugUpstreamResponse(up.status, respText);
+      const res = translateResponsesResponse(JSON.parse(respText));
       scaleUsage(res.usage, factor);
       return c.json(res);
     }
@@ -154,6 +201,7 @@ app.post("/v1/messages", async (c) => {
     const up = await callCopilot(payload, flags, provider);
     if (!up.ok) {
       const txt = await up.text();
+      debugUpstreamResponse(up.status, txt);
       return mirrorError(c, up, txt);
     }
     const factor = contextScale(payload.model);
@@ -161,11 +209,18 @@ app.post("/v1/messages", async (c) => {
     if (body.stream) {
       c.header("Content-Type", "text/event-stream");
       return stream(c, async (s) => {
-        for await (const evt of translateStream(up.body!, () => {}, factor, () => {}))
+        for await (const evt of translateStream(
+          debugTeeStream(up.body!, "<<< chat stream"),
+          () => {},
+          factor,
+          () => {},
+        ))
           await s.write(evt);
       });
     }
-    const res = openAIToAnthropic(await up.json());
+    const chatText = await up.text();
+    debugUpstreamResponse(up.status, chatText);
+    const res = openAIToAnthropic(JSON.parse(chatText));
     scaleUsage(res.usage, factor);
     return c.json(res);
   } catch (e: any) {
@@ -177,6 +232,7 @@ app.post("/v1/messages", async (c) => {
 // Claude Code calls this for context management. Must never 404.
 app.post("/v1/messages/count_tokens", async (c) => {
   const body = await c.req.json();
+  debugInbound("/v1/messages/count_tokens", body);
   // Apply same model resolution as /v1/messages so counts match the serving model.
   body.model = resolveModel(unaliasModel(body.model ?? ""));
   const factor = contextScale(body.model);
@@ -204,10 +260,10 @@ app.get("/v1/models", async (c) => {
     // Mirror upstream errors so proxyUp()'s auth-readiness gate fails correctly.
     if (!res.ok) return mirrorError(c, res);
     data = await res.json();
-    // Self-heal: if the startup catalog fetch failed, repopulate from this live
-    // fetch. Gate on copilotCatalogLoaded(), not map size, because Ollama entries
-    // can pre-fill the map and defeat a size===0 check.
-    if (!copilotCatalogLoaded()) loadCatalog(data);
+    // Refresh the routing catalog on every fetch (idempotent). Copilot adds
+    // models mid-run; without this they'd appear in the picker but misroute
+    // (unaliasModel/route need a modelCatalog entry) until a proxy restart.
+    loadCatalog(data);
   } catch (e) {
     // If Copilot has no credentials but Ollama is configured, serve the Ollama
     // catalog alone so the proxy is usable Ollama-only. If the Copilot catalog
@@ -271,6 +327,7 @@ if (process.argv.includes("--login")) {
     console.log(
       `ccmux on http://127.0.0.1:${PORT} (${USE_NATIVE ? "native" : "translation"} path)`,
     );
+    if (DEBUG) console.log("ccmux: DEBUG on — dumping requests/responses to ~/.config/ccmux/debug.log");
   });
 
   // When started by `ccmux claude` (MANAGED), shut down once all sessions end.
